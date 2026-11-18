@@ -21,6 +21,13 @@ function parseDataUrl(dataUrl: string): { mimeType: string; data: string } | nul
   };
 }
 
+interface ImageAudit {
+  isPromoScreen: boolean;
+  promoCodeText: string;
+  isDepositOrBalanceScreen: boolean;
+  amountEgp: number;
+}
+
 app.post('/api/verify-screenshots', async (req, res) => {
   try {
     const { userId, depositImage, promoImage } = req.body as {
@@ -73,25 +80,43 @@ app.post('/api/verify-screenshots', async (req, res) => {
       },
     });
 
+    const singleAuditSchema = {
+      type: Type.OBJECT,
+      properties: {
+        isPromoScreen: { type: Type.BOOLEAN },
+        promoCodeText: { type: Type.STRING },
+        isDepositOrBalanceScreen: { type: Type.BOOLEAN },
+        amountEgp: { type: Type.NUMBER },
+      },
+      required: [
+        'isPromoScreen',
+        'promoCodeText',
+        'isDepositOrBalanceScreen',
+        'amountEgp',
+      ],
+    };
+
     const response = await ai.models.generateContent({
       model: 'gemini-3.1-flash-lite',
       contents: {
         parts: [
           {
             text:
-              'You are a strict screenshot verification auditor for the Ultrapari app.\n' +
-              'Evaluate IMAGE 1 independently as the Deposit/Balance screenshot, and IMAGE 2 independently as the Registration/Promo Code screenshot.\n' +
-              '- IMAGE 1 is ONLY valid if IMAGE 1 itself shows a deposit confirmation or Ultrapari account balance in EGP (e.g. "200 ج.م").\n' +
-              '- IMAGE 2 is ONLY valid if IMAGE 2 itself shows a registration form with the promo code field containing exact case-sensitive "S333" (distinguish uppercase "S333" from lowercase "s333").',
+              'Audit IMAGE 1 and IMAGE 2 separately for the Ultrapari app.\n' +
+              'For EACH image independently:\n' +
+              '- isPromoScreen: true if the image shows a registration, signup, account, or promo-code screen/field (Arabic "البرومو كود" or English "Promo code").\n' +
+              '- promoCodeText: transcribe ONLY the promo code string written in the promo code input/field (e.g. "S333" or "s333"), preserving EXACT uppercase/lowercase letters! Do NOT include labels. Return "" if none.\n' +
+              '- isDepositOrBalanceScreen: true if the image shows an Ultrapari home/wallet balance (e.g. "200 ج.م") or a deposit transaction/receipt.\n' +
+              '- amountEgp: numeric amount of the deposit or balance shown (e.g. 200 for "200 ج.م" or 180 for "180 EGP"). Return 0 if none.',
           },
-          { text: '--- IMAGE 1 (DEPOSIT / BALANCE SCREENSHOT) ---' },
+          { text: '--- IMAGE 1 ---' },
           {
             inlineData: {
               mimeType: depositPart.mimeType,
               data: depositPart.data,
             },
           },
-          { text: '--- IMAGE 2 (REGISTRATION / PROMO CODE SCREENSHOT) ---' },
+          { text: '--- IMAGE 2 ---' },
           {
             inlineData: {
               mimeType: promoPart.mimeType,
@@ -108,57 +133,70 @@ app.post('/api/verify-screenshots', async (req, res) => {
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            isDepositOrBalanceScreen: { type: Type.BOOLEAN },
-            detectedAmountEgp: { type: Type.NUMBER },
-            currencyText: { type: Type.STRING },
-            isPromoScreen: { type: Type.BOOLEAN },
-            exactPromoCodeText: { type: Type.STRING },
+            image1: singleAuditSchema,
+            image2: singleAuditSchema,
           },
-          required: [
-            'isDepositOrBalanceScreen',
-            'detectedAmountEgp',
-            'currencyText',
-            'isPromoScreen',
-            'exactPromoCodeText',
-          ],
+          required: ['image1', 'image2'],
         },
       },
     });
 
     const rawText = (response.text ?? '{}').trim();
     const parsed = JSON.parse(rawText) as {
-      isDepositOrBalanceScreen: boolean;
-      detectedAmountEgp: number;
-      currencyText: string;
-      isPromoScreen: boolean;
-      exactPromoCodeText: string;
+      image1: ImageAudit;
+      image2: ImageAudit;
     };
 
-    const promoExact = (parsed.exactPromoCodeText || '').trim();
-    const isPromoValid = parsed.isPromoScreen && promoExact === 'S333';
-    const isDepositValid =
-      parsed.isDepositOrBalanceScreen && Number(parsed.detectedAmountEgp) >= 180;
+    const checkPromo = (img: ImageAudit) => {
+      const code = (img.promoCodeText || '').trim();
+      return {
+        isExact: (img.isPromoScreen || code.length > 0) && code === 'S333',
+        isLowercase: code.toLowerCase() === 's333' && code !== 'S333',
+        code,
+      };
+    };
 
-    if (!isPromoValid) {
-      const isLowercaseS = promoExact.toLowerCase() === 's333' && promoExact !== 'S333';
-      return res.status(200).json({
-        valid: false,
-        reasonCode: isLowercaseS ? 'PROMO_LOWERCASE' : 'PROMO_INVALID',
-        detectedPromo: promoExact,
-        detectedAmount: parsed.detectedAmountEgp,
-      });
-    }
+    const checkDeposit = (img: ImageAudit) => {
+      const amt = Number(img.amountEgp) || 0;
+      return {
+        isValid: img.isDepositOrBalanceScreen && amt >= 180,
+        isTooLow: img.isDepositOrBalanceScreen && amt > 0 && amt < 180,
+        amount: amt,
+      };
+    };
 
-    if (!isDepositValid) {
-      return res.status(200).json({
-        valid: false,
-        reasonCode:
-          parsed.isDepositOrBalanceScreen && parsed.detectedAmountEgp > 0
-            ? 'DEPOSIT_TOO_LOW'
-            : 'DEPOSIT_INVALID',
-        detectedPromo: promoExact,
-        detectedAmount: parsed.detectedAmountEgp,
-      });
+    const p1 = checkPromo(parsed.image1);
+    const p2 = checkPromo(parsed.image2);
+    const d1 = checkDeposit(parsed.image1);
+    const d2 = checkDeposit(parsed.image2);
+
+    // Valid if (image1 = deposit >= 180 AND image2 = promo S333) OR (image2 = deposit >= 180 AND image1 = promo S333)
+    const normalOrderValid = d1.isValid && p2.isExact;
+    const swappedOrderValid = d2.isValid && p1.isExact;
+
+    if (!normalOrderValid && !swappedOrderValid) {
+      const anyPromoLower = p1.isLowercase || p2.isLowercase;
+      const anyPromoExact = p1.isExact || p2.isExact;
+      const anyDepositValid = d1.isValid || d2.isValid;
+      const anyDepositLow = d1.isTooLow || d2.isTooLow;
+
+      if (!anyPromoExact) {
+        return res.status(200).json({
+          valid: false,
+          reasonCode: anyPromoLower ? 'PROMO_LOWERCASE' : 'PROMO_INVALID',
+          detectedPromo: p2.code || p1.code,
+          detectedAmount: Math.max(d1.amount, d2.amount),
+        });
+      }
+
+      if (!anyDepositValid) {
+        return res.status(200).json({
+          valid: false,
+          reasonCode: anyDepositLow ? 'DEPOSIT_TOO_LOW' : 'DEPOSIT_INVALID',
+          detectedPromo: p2.code || p1.code,
+          detectedAmount: Math.max(d1.amount, d2.amount),
+        });
+      }
     }
 
     const code = 'CRASH' + Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -168,8 +206,8 @@ app.post('/api/verify-screenshots', async (req, res) => {
       valid: true,
       code,
       expiry,
-      detectedPromo: promoExact,
-      detectedAmount: parsed.detectedAmountEgp,
+      detectedPromo: 'S333',
+      detectedAmount: normalOrderValid ? d1.amount : d2.amount,
     });
   } catch (err: unknown) {
     console.error('Screenshot verification error:', err);

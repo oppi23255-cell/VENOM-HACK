@@ -76,7 +76,7 @@ export default function App() {
     setIsLoadingModal(true);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
 
     try {
       const response = await fetch('/api/verify-screenshots', {
@@ -97,6 +97,8 @@ export default function App() {
         code?: string;
         expiry?: number;
         reasonCode?: string;
+        detectedPromo?: string;
+        detectedAmount?: number;
         message?: string;
       };
 
@@ -108,10 +110,18 @@ export default function App() {
             setVerifyError(t.err_promo_lowercase);
             break;
           case 'PROMO_INVALID':
-            setVerifyError(t.err_promo_invalid);
+            setVerifyError(
+              data.detectedPromo
+                ? `${t.err_promo_invalid} (المكتشف: ${data.detectedPromo})`
+                : t.err_promo_invalid
+            );
             break;
           case 'DEPOSIT_TOO_LOW':
-            setVerifyError(t.err_deposit_low);
+            setVerifyError(
+              data.detectedAmount
+                ? `${t.err_deposit_low} (المكتشف: ${data.detectedAmount} ج.م)`
+                : t.err_deposit_low
+            );
             break;
           case 'DEPOSIT_INVALID':
             setVerifyError(t.err_deposit_invalid);

@@ -65,7 +65,7 @@ export const AffiliateView: React.FC<AffiliateViewProps> = ({
 
       const img = new Image();
       img.onload = () => {
-        const maxDim = 900;
+        const maxDim = 1600;
         let { width, height } = img;
         if (width > maxDim || height > maxDim) {
           const ratio = Math.min(maxDim / width, maxDim / height);
@@ -81,7 +81,7 @@ export const AffiliateView: React.FC<AffiliateViewProps> = ({
           return;
         }
         ctx.drawImage(img, 0, 0, width, height);
-        setter(canvas.toDataURL('image/jpeg', 0.82));
+        setter(canvas.toDataURL('image/jpeg', 0.88));
       };
       img.onerror = () => setter(rawDataUrl);
       img.src = rawDataUrl;
@@ -188,12 +188,6 @@ export const AffiliateView: React.FC<AffiliateViewProps> = ({
           {t.verify_title}
         </h4>
 
-        {verifyError && (
-          <div className="w-full bg-[#ff0055]/15 border border-[#ff4d4d] text-[#ff4d4d] p-[10px] rounded-[10px] text-center font-bold text-[13px] mb-[12px]">
-            {verifyError}
-          </div>
-        )}
-
         <div className="relative w-full mb-[15px]">
           <input
             type="text"
@@ -295,6 +289,12 @@ export const AffiliateView: React.FC<AffiliateViewProps> = ({
             />
           </div>
         </div>
+
+        {verifyError && (
+          <div className="w-full bg-[#ff0055]/15 border border-[#ff4d4d] text-[#ff4d4d] p-[10px] rounded-[10px] text-center font-bold text-[13px] mb-[12px]">
+            {verifyError}
+          </div>
+        )}
 
         <button
           type="button"
