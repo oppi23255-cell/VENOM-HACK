@@ -55,7 +55,8 @@ export const AffiliateView: React.FC<AffiliateViewProps> = ({
     setter: (url: string | null) => void
   ) => {
     const file = e.target.files?.[0];
-    if (!file || !file.type.startsWith('image/')) return;
+    if (!file) return;
+    if (file.type && !file.type.startsWith('image/')) return;
     onClearError();
 
     const reader = new FileReader();
@@ -65,7 +66,7 @@ export const AffiliateView: React.FC<AffiliateViewProps> = ({
 
       const img = new Image();
       img.onload = () => {
-        const maxDim = 1600;
+        const maxDim = 1100;
         let { width, height } = img;
         if (width > maxDim || height > maxDim) {
           const ratio = Math.min(maxDim / width, maxDim / height);
@@ -81,7 +82,7 @@ export const AffiliateView: React.FC<AffiliateViewProps> = ({
           return;
         }
         ctx.drawImage(img, 0, 0, width, height);
-        setter(canvas.toDataURL('image/jpeg', 0.88));
+        setter(canvas.toDataURL('image/jpeg', 0.76));
       };
       img.onerror = () => setter(rawDataUrl);
       img.src = rawDataUrl;

@@ -74,6 +74,7 @@ app.post('/api/verify-screenshots', async (req, res) => {
     const ai = new GoogleGenAI({
       apiKey: process.env.GEMINI_API_KEY,
       httpOptions: {
+        timeout: 45000,
         headers: {
           'User-Agent': 'aistudio-build',
         },
@@ -96,55 +97,68 @@ app.post('/api/verify-screenshots', async (req, res) => {
       ],
     };
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.1-flash-lite',
-      contents: {
-        parts: [
-          {
-            text:
-              'Audit IMAGE 1 and IMAGE 2 separately for the Ultrapari app.\n' +
-              'For EACH image independently:\n' +
-              '- isPromoScreen: true if the image shows a registration, signup, account, or promo-code screen/field (Arabic "البرومو كود" or English "Promo code").\n' +
-              '- promoCodeText: transcribe ONLY the promo code string written in the promo code input/field (e.g. "S333" or "s333"), preserving EXACT uppercase/lowercase letters! Do NOT include labels. Return "" if none.\n' +
-              '- isDepositOrBalanceScreen: true if the image shows an Ultrapari home/wallet balance (e.g. "200 ج.م") or a deposit transaction/receipt.\n' +
-              '- amountEgp: numeric amount of the deposit or balance shown (e.g. 200 for "200 ج.م" or 180 for "180 EGP"). Return 0 if none.',
-          },
-          { text: '--- IMAGE 1 ---' },
-          {
-            inlineData: {
-              mimeType: depositPart.mimeType,
-              data: depositPart.data,
+    const auditSingleImage = async (part: {
+      mimeType: string;
+      data: string;
+    }): Promise<ImageAudit> => {
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: {
+              parts: [
+                {
+                  text:
+                    'Inspect this Ultrapari app screenshot and extract:\n' +
+                    '- isPromoScreen: true if this shows a registration, signup, or promo code screen/field ("البرومو كود" / "Promo code").\n' +
+                    '- promoCodeText: exact characters inside the promo code field preserving EXACT case ("S333" vs "s333"). Return "" if none.\n' +
+                    '- isDepositOrBalanceScreen: true if this shows an Ultrapari wallet/home balance (e.g. "200 ج.م") or deposit receipt.\n' +
+                    '- amountEgp: numeric balance or deposit amount in EGP (e.g. 200 for "200 ج.م"). Return 0 if none.',
+                },
+                {
+                  inlineData: {
+                    mimeType: part.mimeType,
+                    data: part.data,
+                  },
+                },
+              ],
             },
-          },
-          { text: '--- IMAGE 2 ---' },
-          {
-            inlineData: {
-              mimeType: promoPart.mimeType,
-              data: promoPart.data,
+            config: {
+              thinkingConfig: {
+                thinkingLevel: ThinkingLevel.MINIMAL,
+              },
+              responseMimeType: 'application/json',
+              responseSchema: singleAuditSchema,
             },
-          },
-        ],
-      },
-      config: {
-        thinkingConfig: {
-          thinkingLevel: ThinkingLevel.MINIMAL,
-        },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            image1: singleAuditSchema,
-            image2: singleAuditSchema,
-          },
-          required: ['image1', 'image2'],
-        },
-      },
-    });
+          });
 
-    const rawText = (response.text ?? '{}').trim();
-    const parsed = JSON.parse(rawText) as {
-      image1: ImageAudit;
-      image2: ImageAudit;
+          const rawText = (res.text ?? '{}')
+            .trim()
+            .replace(/^```json\s*/i, '')
+            .replace(/^```\s*/i, '')
+            .replace(/```$/i, '')
+            .trim();
+
+          return JSON.parse(rawText) as ImageAudit;
+        } catch (err) {
+          lastErr = err;
+          if (attempt === 0) {
+            await new Promise((r) => setTimeout(r, 350));
+          }
+        }
+      }
+      throw lastErr ?? new Error('Verification service unavailable');
+    };
+
+    const [audit1, audit2] = await Promise.all([
+      auditSingleImage(depositPart),
+      auditSingleImage(promoPart),
+    ]);
+
+    const parsed = {
+      image1: audit1,
+      image2: audit2,
     };
 
     const checkPromo = (img: ImageAudit) => {

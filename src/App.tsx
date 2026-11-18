@@ -76,7 +76,7 @@ export default function App() {
     setIsLoadingModal(true);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const timeoutId = setTimeout(() => controller.abort(), 50000);
 
     try {
       const response = await fetch('/api/verify-screenshots', {
@@ -92,7 +92,8 @@ export default function App() {
 
       clearTimeout(timeoutId);
 
-      const data = (await response.json()) as {
+      const responseText = await response.text();
+      let data: {
         valid: boolean;
         code?: string;
         expiry?: number;
@@ -100,9 +101,20 @@ export default function App() {
         detectedPromo?: string;
         detectedAmount?: number;
         message?: string;
-      };
+      } | null = null;
+
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        data = null;
+      }
 
       setIsLoadingModal(false);
+
+      if (!data) {
+        setVerifyError(`${t.err_server} (${response.status})`);
+        return;
+      }
 
       if (!response.ok || !data.valid || !data.code || !data.expiry) {
         switch (data.reasonCode) {
